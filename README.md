@@ -53,6 +53,4 @@ Ancak **TeknoLAB** ekibi olarak kurduğumuz bu esnek *YOLO11 + Çevrimdışı NL
 * **Sinyal Filtreleme (Debounce):** Kamera akışındaki anlık titremeleri engellemek için 5 frame'lik bir kuyruk yapısı (deque) kullanılarak stabilite sağlanmıştır.
 
 ## 👥 Takım Rolleri
-* **Veri Sorumlusu:** TeknoLAB Ekip Üyesi 1 (Veri toplama, Roboflow Augmentation yönetimi)
-* **Modelleme Sorumlusu:** TeknoLAB Ekip Üyesi 2 (Google Colab T4 GPU Eğitim süreçleri ve Fine-Tuning)
-* **Arayüz & Entegrasyon Sorumlusu:** TeknoLAB Ekip Üyesi 3 (Streamlit geliştirme ve Çevrimdışı NLP Entegrasyonu)
+TeknoLAB yönergesi kapsamında belirtilen tüm teknik sorumluluklar, tek bir geliştirici tarafından uçtan uca (End-to-End) üstlenilmiştir.
