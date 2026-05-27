@@ -1,0 +1,1191 @@
+import streamlit as st
+import cv2
+import difflib
+from collections import deque
+from ultralytics import YOLO
+
+# ══════════════════════════════════════════════════════════
+# 1. NLP — OFFLİNE KELİME TAMAMLAYICI
+# ══════════════════════════════════════════════════════════
+class OfflineAutoCompleter:
+    def __init__(self):
+        self.vocabulary = [
+            "MERHABA", "PROJE", "SİSTEM", "KONTROL", "ROBOT", "YAPAYZEKA",
+            "OTOMASYON", "MÜHENDİS", "DENEME", "BİLGİSAYAR", "GÖRÜNTÜ",
+            "HELLO", "WORLD", "SYSTEM", "CONTROL", "ROBOTICS", "TEKNOLAB",
+            "AUTOMATION", "ENGINEER", "PROJECT", "COMPUTER", "VISION"
+        ]
+
+    def suggest_word(self, partial_word, top_n=3):
+        if not partial_word:
+            return []
+        partial_word = partial_word.upper()
+        prefix_matches = [w for w in self.vocabulary if w.startswith(partial_word)]
+        close_matches  = difflib.get_close_matches(partial_word, self.vocabulary, n=top_n, cutoff=0.4)
+        combined = list({w for w in (prefix_matches + close_matches)})
+        return combined[:top_n]
+
+
+# ══════════════════════════════════════════════════════════
+# 2. SİNYAL FİLTRELEME & WORD ASSEMBLER
+# ══════════════════════════════════════════════════════════
+class WordAssembler:
+    def __init__(self, debounce_frames=5):
+        self.debounce_frames = debounce_frames
+        self.frame_buffer    = deque(maxlen=debounce_frames)
+        self.current_word    = ""
+        self.full_sentence   = ""
+
+    def update(self, detected_char):
+        if not detected_char:
+            return self.current_word, self.full_sentence
+
+        self.frame_buffer.append(detected_char)
+
+        if len(self.frame_buffer) == self.debounce_frames and len(set(self.frame_buffer)) == 1:
+            val = self.frame_buffer[0]
+
+            if val in ("SPACE", "YUMRUK"):
+                if self.current_word:
+                    self.full_sentence += self.current_word + " "
+                    self.current_word   = ""
+                self.frame_buffer.clear()
+
+            elif not self.current_word or self.current_word[-1] != val:
+                self.current_word += val
+                self.frame_buffer.clear()
+
+        return self.current_word, self.full_sentence
+
+
+# ══════════════════════════════════════════════════════════
+# 3. SAYFA AYARI
+# ══════════════════════════════════════════════════════════
+st.set_page_config(page_title="TeknoLAB ASL AI | Ahmet Bilal Bayrak", layout="wide", page_icon="🤟", initial_sidebar_state="expanded")
+
+# ══════════════════════════════════════════════════════════
+# 4. MASTER CSS
+# ══════════════════════════════════════════════════════════
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Poppins:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,300;1,400&display=swap');
+
+/* ─── PALETTE ─────────────────────────────────────── */
+:root {
+    /* Ink Black */
+    --ink-100:  #000407;
+    --ink-500:  #001524;
+    --ink-600:  #004c83;
+    --ink-700:  #0083e1;
+    --ink-800:  #41b0ff;
+    --ink-900:  #a0d7ff;
+
+    /* Stormy Teal */
+    --teal-200: #08262b;
+    --teal-300: #0c3940;
+    --teal-400: #104c56;
+    --teal-500: #15616d;
+    --teal-600: #2199ab;
+    --teal-700: #3ec5da;
+    --teal-800: #7ed9e7;
+
+    /* Papaya Whip */
+    --papaya-400: #ffc574;
+    --papaya-500: #ffecd1;
+    --papaya-600: #fff0da;
+    --papaya-700: #fff4e3;
+
+    /* Vivid Tangerine */
+    --tang-400:  #cc6300;
+    --tang-500:  #ff7d00;
+    --tang-600:  #ff9633;
+    --tang-700:  #ffb066;
+
+    /* Brandy */
+    --brandy-400: #5e200c;
+    --brandy-500: #78290f;
+    --brandy-600: #b93f17;
+    --brandy-700: #e66235;
+
+    /* Semantic aliases */
+    --bg:           var(--ink-500);
+    --bg-deep:      var(--ink-100);
+    --bg-raise:     #001f35;
+    --surface:      #002033;
+    --surface-2:    #00273f;
+    --border:       rgba(62,197,218,0.12);
+    --border-mid:   rgba(62,197,218,0.2);
+    --border-light: rgba(255,236,209,0.08);
+    --text-primary: var(--papaya-500);
+    --text-sub:     rgba(255,236,209,0.55);
+    --text-dim:     rgba(255,236,209,0.28);
+    --accent:       var(--tang-500);
+    --accent-2:     var(--teal-700);
+    --white-card:   var(--papaya-600);
+    --white-text:   #1a0d00;
+    --white-sub:    #6b4a30;
+
+    --r-sm:  10px;
+    --r-md:  16px;
+    --r-lg:  22px;
+    --r-xl:  30px;
+
+    --sh-sm: 0 2px 8px rgba(0,0,0,0.4);
+    --sh-md: 0 6px 24px rgba(0,0,0,0.5);
+    --sh-lg: 0 16px 56px rgba(0,0,0,0.65);
+}
+
+/* ─── GLOBAL ──────────────────────────────────────── */
+            
+
+
+
+/* ─── ICON FIX (Material Font İstisnası) ──────────────────── */
+span[class*="material"], i, .material-icons, .material-symbols-rounded {
+    font-family: 'Material Symbols Rounded', 'Material Icons' !important;
+}
+                        
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body,
+[data-testid="stAppViewContainer"],
+[data-testid="stAppViewContainer"] > .main {
+    background: var(--bg) !important;
+    font-family: 'Poppins', sans-serif !important;
+    color: var(--text-primary) !important;
+}
+
+/* Global grain */
+[data-testid="stAppViewContainer"]::before {
+    content: '';
+    position: fixed; inset: 0;
+    z-index: 0; pointer-events: none;
+    opacity: 0.032;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    background-size: 220px 220px;
+}
+
+.block-container {
+    padding: 3rem 3rem 6rem !important;
+    max-width: 1380px !important;
+    position: relative; z-index: 1;
+}
+
+/* ─── SIDEBAR ─────────────────────────────────────── */
+[data-testid="stSidebar"] {
+    background: var(--bg-deep) !important;
+    border-right: 1px solid var(--border) !important;
+    min-width: 240px !important;
+}
+[data-testid="stSidebar"] .block-container {
+    padding: 2rem 1.5rem !important;
+}
+[data-testid="stSidebar"] { font-family: 'Poppins', sans-serif !important; }
+
+/* sidebar nav buttons */
+[data-testid="stSidebar"] [data-testid="stButton"] > button {
+    background: transparent !important;
+    color: var(--text-sub) !important;
+    border: 1px solid transparent !important;
+    border-radius: var(--r-sm) !important;
+    font-size: 13px !important;
+    font-weight: 500 !important;
+    padding: 10px 14px !important;
+    width: 100% !important;
+    text-align: left !important;
+    justify-content: flex-start !important;
+    letter-spacing: 0.1px !important;
+    box-shadow: none !important;
+    transition: all 0.15s ease !important;
+}
+[data-testid="stSidebar"] [data-testid="stButton"] > button:hover {
+    background: var(--surface) !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border) !important;
+    transform: none !important;
+    box-shadow: none !important;
+}
+
+/* ─── SLIDER / CHECKBOX ───────────────────────────── */
+[data-testid="stSlider"] > div > div > div > div { background: var(--tang-500) !important; }
+[data-testid="stSlider"] label, [data-testid="stSlider"] p {
+    font-family: 'Poppins', sans-serif !important;
+    font-size: 12px !important; font-weight: 500 !important;
+    color: var(--text-sub) !important;
+}
+[data-testid="stCheckbox"] label {
+    font-family: 'Poppins', sans-serif !important;
+    font-size: 13px !important; font-weight: 500 !important;
+    color: var(--text-primary) !important;
+}
+
+/* ─── MAIN BUTTONS ────────────────────────────────── */
+[data-testid="stButton"] > button {
+    font-family: 'Poppins', sans-serif !important;
+    font-size: 12px !important; font-weight: 600 !important;
+    background: var(--surface-2) !important;
+    color: var(--text-primary) !important;
+    border: 1px solid var(--border-mid) !important;
+    border-radius: var(--r-sm) !important;
+    padding: 10px 20px !important;
+    transition: all 0.18s ease !important;
+    box-shadow: var(--sh-sm) !important;
+    letter-spacing: 0.2px !important;
+}
+[data-testid="stButton"] > button:hover {
+    background: var(--teal-500) !important;
+    color: var(--papaya-500) !important;
+    border-color: var(--teal-600) !important;
+    transform: translateY(-1px) !important;
+    box-shadow: var(--sh-md) !important;
+}
+
+/* ─── IMAGE ───────────────────────────────────────── */
+[data-testid="stImage"] img { border-radius: var(--r-md) !important; }
+
+/* ── STREAMLIT CHROME TEMİZLİĞİ (ULTRA CLEAN) ── */
+    #MainMenu, footer { 
+        visibility: hidden !important; 
+    }
+    
+    /* Header arka planını tamamen şeffaf yap (Lacivert temamızla bütünleşsin) */
+    [data-testid="stHeader"] {
+        background-color: transparent !important;
+    }
+    
+    /* Sağ üst köşedeki Deploy, GitHub vs. gereksiz butonları yok et */
+    [data-testid="stToolbar"] {
+        display: none !important;
+    }
+    
+    /* Streamlit'in sayfa üstüne attığı ince renkli çizgiyi sil */
+    [data-testid="stDecoration"] { 
+        display: none !important; 
+            
+    }
+            
+/* ── AÇMA BUTONU (VERSION-PROOF FIX) ── */
+    /* Header içinde kalan açma butonunu zorla görünür ve şık yap */
+    [data-testid="stHeader"] button {
+        display: inline-flex !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        background: var(--surface) !important;
+        border: 1px solid var(--border) !important;
+        border-radius: var(--r-sm) !important;
+        margin: 14px !important;
+        box-shadow: var(--sh-sm) !important;
+        transition: all 0.2s ease !important;
+        z-index: 99999 !important; /* Her şeyin üstünde tut */
+    }
+    
+    /* İkonun rengini papaya (krem) yap */
+    [data-testid="stHeader"] button svg {
+        color: var(--papaya-500) !important;
+        fill: var(--papaya-500) !important;
+    }
+    
+    /* Üzerine gelince (Hover) Teal rengine dönsün */
+    [data-testid="stHeader"] button:hover {
+        background: var(--teal-500) !important;
+        border-color: var(--teal-600) !important;
+        box-shadow: var(--sh-md) !important;
+    }
+    [data-testid="stHeader"] button:hover svg {
+        color: var(--ink-500) !important;
+        fill: var(--ink-500) !important;
+    }
+            
+
+/* ─── ALERTS ──────────────────────────────────────── */
+[data-testid="stAlert"] {
+    background: var(--surface) !important;
+    border: 1px solid var(--border-mid) !important;
+    border-radius: var(--r-md) !important;
+    color: var(--text-primary) !important;
+    font-family: 'Poppins', sans-serif !important;
+}
+
+/* ══════════════════════════════════════════════════
+   COMPONENT CLASSES
+══════════════════════════════════════════════════ */
+
+/* ─── SIDEBAR BRAND ───────────────────────────────── */
+.sb-brand {
+    display: flex; align-items: center; gap: 12px;
+    padding-bottom: 24px; margin-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+}
+.sb-brand-icon {
+    width: 40px; height: 40px;
+    background: var(--teal-500);
+    border-radius: var(--r-sm);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 20px;
+    box-shadow: 0 4px 14px rgba(21,97,109,0.5);
+    flex-shrink: 0;
+}
+.sb-name { font-size: 14px; font-weight: 700; color: var(--text-primary); }
+.sb-sub  { font-size: 10px; font-weight: 400; color: var(--text-dim); letter-spacing: 0.3px; margin-top:1px; }
+
+.sb-section {
+    font-size: 9px; font-weight: 700;
+    letter-spacing: 1.6px; text-transform: uppercase;
+    color: var(--text-dim);
+    margin: 22px 0 6px; padding-left: 2px;
+}
+
+.sb-status-pill {
+    display: flex; align-items: center; gap: 8px;
+    padding: 9px 12px;
+    border-radius: var(--r-sm);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    margin-top: 4px;
+}
+.sb-dot {
+    width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+    animation: pulse 2.2s ease infinite;
+}
+@keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.25;} }
+.sb-dot.on  { background: #4cd37a; }
+.sb-dot.off { background: #e05555; }
+.sb-status-text { font-size: 11px; font-weight: 600; color: var(--text-sub); }
+
+.sb-table {
+    margin-top: 14px;
+    border-radius: var(--r-sm);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    overflow: hidden;
+}
+.sb-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 7px 12px;
+}
+.sb-row + .sb-row { border-top: 1px solid var(--border); }
+.sb-key { font-size: 10px; font-weight: 500; color: var(--text-dim); }
+.sb-val { font-size: 11px; font-weight: 700; color: var(--tang-600); }
+
+/* ─── ACTIVE NAV ITEM ─────────────────────────────── */
+.nav-active {
+    background: var(--teal-400);
+    border: 1px solid var(--teal-600) !important;
+    color: var(--papaya-500) !important;
+    border-radius: var(--r-sm);
+    padding: 10px 14px;
+    font-size: 13px; font-weight: 600;
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 2px;
+    box-shadow: 0 2px 10px rgba(21,97,109,0.4);
+}
+
+/* ─── PAGE HERO ───────────────────────────────────── */
+.hero {
+    padding: 0 0 48px 0;
+}
+.hero-tag {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 10px; font-weight: 700;
+    letter-spacing: 2.5px; text-transform: uppercase;
+    color: var(--teal-700);
+    margin-bottom: 14px;
+}
+.hero-tag::before {
+    content: '';
+    width: 22px; height: 1.5px;
+    background: var(--teal-700);
+}
+.hero-title {
+    font-size: 52px; font-weight: 800;
+    color: var(--papaya-500);
+    line-height: 1.06; letter-spacing: -1.5px;
+    margin-bottom: 14px;
+}
+.hero-title em {
+    font-style: normal;
+    color: var(--teal-700);
+}
+.hero-title span.dim {
+    color: var(--text-dim);
+    font-weight: 300;
+}
+.hero-desc {
+    font-size: 15px; font-weight: 400;
+    color: var(--text-sub);
+    line-height: 1.7; max-width: 560px;
+}
+
+/* ─── SECTION LABEL ───────────────────────────────── */
+.sec-lbl {
+    font-size: 9px; font-weight: 700;
+    letter-spacing: 2px; text-transform: uppercase;
+    color: var(--text-dim);
+    display: flex; align-items: center; gap: 12px;
+    margin-bottom: 16px;
+}
+.sec-lbl::after {
+    content: ''; flex: 1; height: 1px;
+    background: var(--border);
+}
+
+/* ─── CAMERA CARD ─────────────────────────────────── */
+.cam-card {
+    background: var(--bg-deep);
+    border-radius: var(--r-xl);
+    border: 1px solid var(--border-mid);
+    box-shadow: var(--sh-lg);
+    overflow: hidden;
+    position: relative;
+}
+.cam-card::after {
+    content: '';
+    position: absolute; inset: 0; pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
+    background-size: 128px 128px;
+    opacity: 0.045; border-radius: var(--r-xl); z-index: 10;
+}
+.cam-bar {
+    display: flex; align-items: center; gap: 7px;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(0,4,7,0.6);
+}
+.dot { width: 12px; height: 12px; border-radius: 50%; }
+.dot-r { background: #FF5F57; }
+.dot-y { background: #FEBC2E; }
+.dot-g { background: #28C840; }
+.cam-title { font-size: 11px; font-weight: 600; color: var(--text-dim); margin-left: 6px; letter-spacing: 0.4px; }
+.live-pill {
+    margin-left: auto;
+    display: flex; align-items: center; gap: 5px;
+    background: rgba(230,98,53,0.15);
+    border: 1px solid rgba(230,98,53,0.3);
+    color: var(--brandy-700);
+    padding: 3px 11px; border-radius: 20px;
+    font-size: 10px; font-weight: 700; letter-spacing: 1px;
+}
+.live-dot {
+    width: 5px; height: 5px;
+    background: var(--brandy-700); border-radius: 50%;
+    animation: pulse 1s infinite;
+}
+.cam-body { padding: 16px; }
+.cam-offline {
+    aspect-ratio: 16/9;
+    background: var(--surface);
+    border-radius: var(--r-md);
+    border: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 10px;
+}
+.cam-offline-icon { font-size: 38px; opacity: 0.15; }
+.cam-offline-txt { font-size: 12px; font-weight: 500; color: var(--text-dim); }
+
+/* ─── METRIC CARDS ────────────────────────────────── */
+.mc {
+    background: var(--white-card);
+    border-radius: var(--r-md);
+    padding: 20px 22px 18px;
+    border: 1px solid rgba(255,236,209,0.15);
+    box-shadow: var(--sh-md), 0 0 0 1px rgba(255,255,255,0.45) inset;
+    position: relative; overflow: hidden;
+    margin-bottom: 12px;
+}
+.mc::before {
+    content: '';
+    position: absolute; inset: 0; pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
+    background-size: 128px 128px;
+    opacity: 0.022; border-radius: var(--r-md);
+}
+.mc.dark {
+    background: var(--surface);
+    border-color: var(--border-mid);
+    box-shadow: var(--sh-md);
+}
+.mc-lbl {
+    font-size: 9px; font-weight: 700;
+    letter-spacing: 1.6px; text-transform: uppercase;
+    color: var(--white-sub); margin-bottom: 8px;
+    display: flex; align-items: center; gap: 6px;
+}
+.mc.dark .mc-lbl { color: var(--text-dim); }
+.mc-val {
+    font-size: 24px; font-weight: 700;
+    color: var(--white-text);
+    line-height: 1.18; letter-spacing: -0.4px;
+    min-height: 30px; word-break: break-all;
+}
+.mc.dark .mc-val { color: var(--text-primary); }
+.mc-val.empty {
+    font-size: 14px; font-weight: 400;
+    font-style: italic; color: var(--white-sub);
+}
+.mc.dark .mc-val.empty { color: var(--text-dim); }
+
+/* chips */
+.chips { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 4px; }
+.chip {
+    background: rgba(255,244,227,0.55);
+    color: var(--white-text);
+    border: 1px solid rgba(0,0,0,0.1);
+    border-radius: 6px;
+    padding: 4px 12px;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.5px;
+    font-family: 'Poppins', sans-serif;
+}
+.chip-none { font-size: 12px; color: var(--white-sub); font-style: italic; }
+
+/* stats mini */
+.stats-row { display: flex; gap: 8px; margin-top: 10px; }
+.stat-box {
+    flex: 1; text-align: center;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--r-sm); padding: 11px 6px;
+}
+.stat-val { font-size: 20px; font-weight: 800; color: var(--tang-600); line-height: 1; }
+.stat-lbl { font-size: 9px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.8px; margin-top: 4px; }
+
+/* ─── INFO STRIP ──────────────────────────────────── */
+.strip {
+    background: var(--surface);
+    border: 1px solid var(--border-mid);
+    border-radius: var(--r-md);
+    padding: 16px 20px;
+    display: flex; gap: 14px; align-items: flex-start;
+    margin-bottom: 28px;
+}
+.strip-bar { width: 3px; min-height: 44px; border-radius: 3px; background: var(--tang-500); align-self: stretch; flex-shrink: 0; }
+.strip-text { font-size: 13px; color: var(--text-sub); line-height: 1.7; }
+.strip-text strong { color: var(--tang-600); font-weight: 700; }
+
+/* ─── SIGN CARDS (LEARNING) ───────────────────────── */
+.sign-card {
+    background: var(--white-card);
+    border-radius: var(--r-xl);
+    padding: 26px 22px 20px;
+    border: 1px solid rgba(255,236,209,0.2);
+    box-shadow: var(--sh-lg);
+    position: relative; overflow: hidden;
+    height: 100%;
+}
+.sign-card::after {
+    content: '';
+    position: absolute; inset: 0; pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.88' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
+    background-size: 128px 128px;
+    opacity: 0.022; border-radius: var(--r-xl);
+}
+.sign-letter { font-size: 64px; font-weight: 900; color: var(--white-text); line-height: 1; letter-spacing: -2px; margin-bottom: 10px; }
+.sign-letter.sp { font-size: 28px; letter-spacing: -0.5px; color: var(--white-sub); }
+.sign-subtag { font-size: 9px; font-weight: 700; letter-spacing: 1.8px; text-transform: uppercase; color: var(--white-sub); margin-bottom: 8px; }
+.sign-desc { font-size: 13px; font-weight: 400; color: var(--white-sub); line-height: 1.65; }
+.sign-badge {
+    display: inline-block; margin-top: 14px;
+    padding: 3px 10px; border-radius: 5px;
+    font-size: 9px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase;
+    background: rgba(0,0,0,0.07); color: var(--white-sub);
+}
+.sign-badge.sp-badge { background: rgba(255,125,0,0.12); color: var(--tang-400); }
+
+/* ─── CONTEXT CARDS (ABOUT/STORY) ─────────────────── */
+.ctx-card {
+    background: var(--surface);
+    border: 1px solid var(--border-mid);
+    border-radius: var(--r-xl);
+    padding: 28px 28px 24px;
+    box-shadow: var(--sh-md);
+    position: relative; overflow: hidden;
+    height: 100%;
+}
+.ctx-card::before {
+    content: '';
+    position: absolute; inset: 0; pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
+    background-size: 128px 128px;
+    opacity: 0.038; border-radius: var(--r-xl);
+}
+.ctx-eyebrow { font-size: 9px; font-weight: 700; letter-spacing: 1.8px; text-transform: uppercase; color: var(--teal-700); margin-bottom: 10px; }
+.ctx-title { font-size: 18px; font-weight: 700; color: var(--text-primary); letter-spacing: -0.3px; margin-bottom: 12px; line-height: 1.3; }
+.ctx-body { font-size: 13px; font-weight: 400; color: var(--text-sub); line-height: 1.75; }
+.ctx-body strong { color: var(--tang-600); font-weight: 700; }
+.ctx-body em { font-style: normal; color: var(--teal-700); }
+
+/* ─── SPEC PILLS ──────────────────────────────────── */
+.spec-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 24px; }
+.spec-pill {
+    flex: 1; min-width: 110px;
+    background: var(--white-card);
+    border-radius: var(--r-md);
+    padding: 14px 18px;
+    border: 1px solid rgba(255,244,227,0.15);
+    box-shadow: var(--sh-md);
+    position: relative; overflow: hidden;
+}
+.spec-pill::after {
+    content: '';
+    position: absolute; inset: 0; pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
+    background-size: 128px 128px;
+    opacity: 0.02;
+}
+.spec-val { font-size: 24px; font-weight: 800; color: var(--white-text); letter-spacing: -0.5px; line-height: 1; margin-bottom: 4px; }
+.spec-lbl { font-size: 9px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--white-sub); }
+
+/* ─── PRACTICE CAM ────────────────────────────────── */
+.prac-wrap {
+    background: var(--bg-deep);
+    border-radius: var(--r-xl);
+    border: 1px solid var(--border-mid);
+    box-shadow: var(--sh-lg);
+    overflow: hidden;
+}
+.prac-bar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(0,4,7,0.7);
+}
+.prac-title { font-size: 10px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; color: var(--text-dim); }
+.prac-body { padding: 14px; }
+
+.detect-box {
+    margin-top: 12px;
+    padding: 16px 18px;
+    border-radius: var(--r-md);
+    background: var(--surface); border: 1px solid var(--border);
+    text-align: center;
+}
+.detect-lbl { font-size: 9px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; color: var(--text-dim); margin-bottom: 6px; }
+.detect-val { font-size: 34px; font-weight: 800; color: var(--text-primary); letter-spacing: -0.5px; line-height: 1; }
+.detect-val.empty { color: var(--text-dim); font-size: 22px; font-weight: 300; }
+
+/* ─── DIVIDER ─────────────────────────────────────── */
+.divider { height: 1px; background: var(--border); margin: 40px 0; }
+
+/* ─── QUOTE BLOCK ─────────────────────────────────── */
+.quote-block {
+    border-left: 3px solid var(--tang-500);
+    padding: 16px 22px;
+    background: var(--surface);
+    border-radius: 0 var(--r-md) var(--r-md) 0;
+    margin: 28px 0;
+}
+.quote-text { font-size: 15px; font-weight: 500; color: var(--text-primary); font-style: italic; line-height: 1.7; }
+.quote-attr { font-size: 11px; font-weight: 600; color: var(--text-dim); margin-top: 8px; letter-spacing: 0.5px; }
+
+/* ─── TIMELINE ────────────────────────────────────── */
+.timeline { display: flex; flex-direction: column; gap: 0; }
+.tl-item { display: flex; gap: 18px; padding-bottom: 28px; position: relative; }
+.tl-item:last-child { padding-bottom: 0; }
+.tl-item:not(:last-child)::before {
+    content: '';
+    position: absolute;
+    left: 11px; top: 26px;
+    width: 1px; bottom: 0;
+    background: var(--border);
+}
+.tl-dot {
+    width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0;
+    background: var(--teal-500); border: 2px solid var(--teal-700);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; margin-top: 1px;
+    box-shadow: 0 0 12px rgba(62,197,218,0.3);
+}
+.tl-content { flex: 1; }
+.tl-date { font-size: 10px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--teal-700); margin-bottom: 4px; }
+.tl-title { font-size: 14px; font-weight: 700; color: var(--text-primary); margin-bottom: 6px; }
+.tl-body { font-size: 12px; font-weight: 400; color: var(--text-sub); line-height: 1.65; }
+
+</style>
+""", unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════════
+# 5. MODEL + SESSION STATE
+# ══════════════════════════════════════════════════════════
+@st.cache_resource
+def load_model():
+    return YOLO("best.pt")
+
+try:
+    model = load_model()
+    _model_ok = True
+except Exception:
+    _model_ok = False
+
+if 'page' not in st.session_state:
+    st.session_state.page = "canli"
+if 'assembler' not in st.session_state:
+    st.session_state.assembler = WordAssembler(debounce_frames=5)
+if 'completer' not in st.session_state:
+    st.session_state.completer = OfflineAutoCompleter()
+
+
+# ══════════════════════════════════════════════════════════
+# 6. SIDEBAR NAVİGASYON
+# ══════════════════════════════════════════════════════════
+with st.sidebar:
+    st.markdown("""
+    <div class="sb-brand">
+        <div class="sb-brand-icon">🤟</div>
+        <div>
+            <div class="sb-name">TeknoLAB ASL</div>
+            <div class="sb-sub">2025–2026 · Solo Project</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown('<div class="sb-section">Sayfalar</div>', unsafe_allow_html=True)
+
+    pages = [
+        ("canli",   "🎥", "Canlı Çeviri"),
+        ("kilavuz", "📚", "ASL Kılavuzu"),
+        ("hikaye",  "✍️",  "Proje Hikayesi"),
+    ]
+    for key, icon, label in pages:
+        active = st.session_state.page == key
+        if active:
+            st.markdown(f'<div class="nav-active">{icon}&nbsp;&nbsp;{label}</div>', unsafe_allow_html=True)
+        else:
+            if st.button(f"{icon}  {label}", key=f"nav_{key}", use_container_width=True):
+                st.session_state.page = key
+                st.rerun()
+
+    st.markdown('<div class="sb-section">Model</div>', unsafe_allow_html=True)
+    if _model_ok:
+        st.markdown("""
+        <div class="sb-status-pill">
+            <div class="sb-dot on"></div>
+            <span class="sb-status-text">Lokal Model Aktif</span>
+        </div>""", unsafe_allow_html=True)
+    else:
+        st.markdown("""
+        <div class="sb-status-pill">
+            <div class="sb-dot off"></div>
+            <span class="sb-status-text">best.pt bulunamadı</span>
+        </div>""", unsafe_allow_html=True)
+
+    st.markdown('<div class="sb-section">Parametreler</div>', unsafe_allow_html=True)
+    conf_threshold = st.slider("Güven Eşiği", 0.30, 1.00, 0.60)
+    debounce_val   = st.slider("Debounce Frame", 3, 15, 5)
+
+    st.markdown("""
+    <div class="sb-table">
+        <div class="sb-row"><span class="sb-key">Mimari</span><span class="sb-val">YOLO11</span></div>
+        <div class="sb-row"><span class="sb-key">İşleme</span><span class="sb-val">OpenCV</span></div>
+        <div class="sb-row"><span class="sb-key">NLP</span><span class="sb-val">Offline</span></div>
+        <div class="sb-row"><span class="sb-key">Bulut API</span><span class="sb-val">Sıfır</span></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if not _model_ok:
+        st.stop()
+
+
+# ══════════════════════════════════════════════════════════
+# 7. SAYFA: CANLI ÇEVİRİ
+# ══════════════════════════════════════════════════════════
+if st.session_state.page == "canli":
+
+    st.markdown("""
+    <div class="hero">
+        <div class="hero-tag">TeknoLAB · YOLO11 + OpenCV</div>
+        <div class="hero-title">Canlı İşaret <em>Çevirisi</em></div>
+        <div class="hero-desc">Kameranı aç, işareti göster. Sistem sinyali filtreler, harfi yazar, kelimeyi tamamlar. Tamamen çevrimdışı.</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col_cam, col_nlp = st.columns([3, 2], gap="large")
+
+    with col_cam:
+        st.markdown('<div class="sec-lbl">Kamera Akışı</div>', unsafe_allow_html=True)
+        st.markdown("""
+        <div class="cam-card">
+            <div class="cam-bar">
+                <div class="dot dot-r"></div>
+                <div class="dot dot-y"></div>
+                <div class="dot dot-g"></div>
+                <span class="cam-title">ASL Vision · YOLO11</span>
+                <div class="live-pill"><div class="live-dot"></div>LIVE</div>
+            </div>
+            <div class="cam-body">
+        """, unsafe_allow_html=True)
+
+        run_camera = st.checkbox("Kamerayı Aktif Et", value=False)
+        FRAME_WINDOW = st.empty()
+
+        if not run_camera:
+            st.markdown("""
+            <div class="cam-offline">
+                <div class="cam-offline-icon">📷</div>
+                <div class="cam-offline-txt">Aktif etmek için kutuyu işaretleyin</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.markdown("</div></div>", unsafe_allow_html=True)
+
+    with col_nlp:
+        st.markdown('<div class="sec-lbl">NLP Çıktıları</div>', unsafe_allow_html=True)
+
+        sentence_ph = st.empty()
+        word_ph     = st.empty()
+        suggest_ph  = st.empty()
+
+        def render_nlp(full_sentence, current_word, suggestions):
+            s_html = f'<div class="mc-val">{full_sentence.strip()}</div>' if full_sentence.strip() else '<div class="mc-val empty">Henüz cümle oluşmadı…</div>'
+            w_html = f'<div class="mc-val">{current_word}</div>'         if current_word           else '<div class="mc-val empty">Bekleniyor…</div>'
+            if suggestions:
+                chips = "".join([f'<div class="chip">{s}</div>' for s in suggestions])
+                sg = f'<div class="chips">{chips}</div>'
+            else:
+                sg = '<div class="chip-none">Harf girişi bekleniyor…</div>'
+
+            sentence_ph.markdown(f'<div class="mc"><div class="mc-lbl">📋 &nbsp;Oluşan Cümle</div>{s_html}</div>', unsafe_allow_html=True)
+            word_ph.markdown(     f'<div class="mc"><div class="mc-lbl">🔤 &nbsp;Mevcut Kelime</div>{w_html}</div>',     unsafe_allow_html=True)
+            suggest_ph.markdown(  f'<div class="mc dark"><div class="mc-lbl">💡 &nbsp;Akıllı Tahminler</div>{sg}</div>',   unsafe_allow_html=True)
+
+        render_nlp(
+            st.session_state.assembler.full_sentence,
+            st.session_state.assembler.current_word,
+            st.session_state.completer.suggest_word(st.session_state.assembler.current_word)
+        )
+
+        st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+
+        if st.button("🧹  Ekranı Temizle", use_container_width=True):
+            st.session_state.assembler.current_word  = ""
+            st.session_state.assembler.full_sentence = ""
+            st.rerun()
+
+        char_c = len(st.session_state.assembler.full_sentence.replace(" ", ""))
+        word_c = len([w for w in st.session_state.assembler.full_sentence.split() if w])
+        st.markdown(f"""
+        <div class="stats-row">
+            <div class="stat-box"><div class="stat-val">{char_c}</div><div class="stat-lbl">Karakter</div></div>
+            <div class="stat-box"><div class="stat-val">{word_c}</div><div class="stat-lbl">Kelime</div></div>
+            <div class="stat-box">
+                <div class="stat-val" style="color:{'#4cd37a' if run_camera else 'var(--text-dim)'}; font-size:20px;">
+                    {'●' if run_camera else '○'}
+                </div>
+                <div class="stat-lbl">Kamera</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # ── KAMERA DÖNGÜSÜ ────────────────────────────────────────────────────
+    if run_camera:
+        cap = cv2.VideoCapture(0)
+        while run_camera:
+            ret, frame = cap.read()
+            if not ret:
+                st.error("Kameraya erişilemedi!")
+                break
+            results       = model.predict(frame, conf=conf_threshold, verbose=False)
+            detected_char = None
+            if len(results[0].boxes) > 0:
+                detected_char = model.names[int(results[0].boxes[0].cls)]
+            ann = cv2.cvtColor(results[0].plot(), cv2.COLOR_BGR2RGB)
+            FRAME_WINDOW.image(ann, use_container_width=True)
+            current_word, full_sentence = st.session_state.assembler.update(detected_char)
+            render_nlp(full_sentence, current_word, st.session_state.completer.suggest_word(current_word))
+        cap.release()
+
+
+# ══════════════════════════════════════════════════════════
+# 8. SAYFA: ASL KILAVUZU
+# ══════════════════════════════════════════════════════════
+elif st.session_state.page == "kilavuz":
+
+    st.markdown("""
+    <div class="hero">
+        <div class="hero-tag">Öğrenme Modülü</div>
+        <div class="hero-title">ASL <em>Kılavuzu</em></div>
+        <div class="hero-desc">Sistemi test etmek için hangi işaretlerin desteklendiğini öğren. Sağ taraftaki pratik kamerasıyla anında deneyebilirsin.</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("""
+    <div class="strip">
+        <div class="strip-bar"></div>
+        <div class="strip-text">
+            Sistemi kullanırken harf harf yazmak yorucu gelebilir — bu yüzden sisteme 
+            <strong>NLP tabanlı offline kelime tamamlama</strong> motoru entegre ettim. 
+            Sadece ilk birkaç harfi göster ve <strong>YUMRUK (SPACE)</strong> işaretiyle kelimeyi onayla. 
+            Zaten gerçek hayatta işaret dilleri kelimeleri çoğunlukla harf harf değil, tek bir bütün işaretle ifade eder.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col_guide, col_practice = st.columns([3, 2], gap="large")
+
+    with col_guide:
+        st.markdown('<div class="sec-lbl">Desteklenen İşaretler</div>', unsafe_allow_html=True)
+
+        signs = [
+            ("A",      False, "",             "Yumruk kapalı, başparmak dışarıda yanda konumlanır. Ele bakıldığında sıkı yumruk yapılmış izlenimi verir.",     "Temel Harf"),
+            ("B",      False, "",             "Dört parmak açık, düz ve yapışık tutulur. Başparmak içe, avuç içe doğru katlanır.",                              "Temel Harf"),
+            ("C",      False, "",             "El yarı açık tutularak büyük 'C' harfi şeklinde kıvrılır. Tüm parmaklar eşit biçimde bükülür.",                 "Temel Harf"),
+            ("YUMRUK", True,  "SPACE Komutu", "Tüm parmaklar sıkıca kapanır. Sistem bunu kelime bitişi ve boşluk (SPACE) sinyali olarak algılar.",             "Özel Komut"),
+        ]
+
+        c1, c2 = st.columns(2, gap="medium")
+        for i, (letter, is_sp, subtag, desc, badge) in enumerate(signs):
+            col = c1 if i % 2 == 0 else c2
+            with col:
+                lc = "sign-letter sp" if is_sp else "sign-letter"
+                bc = "sign-badge sp-badge" if is_sp else "sign-badge"
+                st.markdown(f"""
+                <div class="sign-card">
+                    <div class="{lc}">{letter}</div>
+                    <div class="sign-subtag">{subtag}</div>
+                    <div class="sign-desc">{desc}</div>
+                    <div class="{bc}">{badge}</div>
+                </div>
+                <div style="height:12px"></div>
+                """, unsafe_allow_html=True)
+
+        st.markdown('<div class="sec-lbl" style="margin-top:16px;">Sistem Özellikleri</div>', unsafe_allow_html=True)
+        st.markdown("""
+        <div class="spec-row">
+            <div class="spec-pill"><div class="spec-val">≤0.5s</div><div class="spec-lbl">Tepki Süresi</div></div>
+            <div class="spec-pill"><div class="spec-val">YOLO11</div><div class="spec-lbl">Mimari</div></div>
+            <div class="spec-pill"><div class="spec-val">%0</div><div class="spec-lbl">Bulut API</div></div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col_practice:
+        st.markdown('<div class="sec-lbl">Pratik Ekranı</div>', unsafe_allow_html=True)
+        st.markdown("""
+        <div class="prac-wrap">
+            <div class="prac-bar">
+                <span style="font-size:13px;">📷</span>
+                <span class="prac-title">Canlı Test Kamerası</span>
+            </div>
+            <div class="prac-body">
+        """, unsafe_allow_html=True)
+
+        run_practice  = st.checkbox("Pratik Kamerasını Aç", value=False, key="prac_cam")
+        PRACTICE_WIN  = st.empty()
+
+        if not run_practice:
+            st.markdown("""
+            <div class="cam-offline" style="aspect-ratio:4/3;">
+                <div class="cam-offline-icon">🤟</div>
+                <div class="cam-offline-txt">İşaretleri test etmek için aktif edin</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.markdown("</div></div>", unsafe_allow_html=True)
+
+        detect_ph = st.empty()
+        detect_ph.markdown("""
+        <div class="detect-box">
+            <div class="detect-lbl">Algılanan İşaret</div>
+            <div class="detect-val empty">—</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if run_practice:
+            cap2 = cv2.VideoCapture(0)
+            while run_practice:
+                ret, frame = cap2.read()
+                if not ret:
+                    break
+                r2  = model.predict(frame, conf=conf_threshold, verbose=False)
+                det = None
+                if len(r2[0].boxes) > 0:
+                    det = model.names[int(r2[0].boxes[0].cls)]
+                PRACTICE_WIN.image(cv2.cvtColor(r2[0].plot(), cv2.COLOR_BGR2RGB), use_container_width=True)
+                if det:
+                    detect_ph.markdown(f"""
+                    <div class="detect-box" style="border-color:var(--tang-500);">
+                        <div class="detect-lbl" style="color:var(--tang-600);">Algılanan İşaret</div>
+                        <div class="detect-val">{det}</div>
+                    </div>""", unsafe_allow_html=True)
+                else:
+                    detect_ph.markdown("""
+                    <div class="detect-box">
+                        <div class="detect-lbl">Algılanan İşaret</div>
+                        <div class="detect-val empty">—</div>
+                    </div>""", unsafe_allow_html=True)
+            cap2.release()
+
+
+# ══════════════════════════════════════════════════════════
+# 9. SAYFA: PROJE HİKAYESİ
+# ══════════════════════════════════════════════════════════
+elif st.session_state.page == "hikaye":
+
+    st.markdown("""
+    <div class="hero">
+        <div class="hero-tag">Solo · TeknoLAB 2025–2026</div>
+        <div class="hero-title">Bu Projeyi <em>Neden</em><br><span class="dim">Yaptım</span></div>
+        <div class="hero-desc">Bir lise öğrencisinin, sıfırdan kurduğu gerçek zamanlı yapay zeka sistemi. Ne ekip var ne bütçe — sadece merak ve ısrar.</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── BÖLÜM 1: ASL SEÇİMİNİN DÜRÜST İTİRAFI ─────────────────────────
+    st.markdown('<div class="sec-lbl">Dürüst Bir İtiraf</div>', unsafe_allow_html=True)
+
+    st.markdown("""
+    <div class="ctx-card" style="margin-bottom:16px;">
+        <div class="ctx-eyebrow">Neden ASL? Türk değil miyiz?</div>
+        <div class="ctx-title">TİD yerine ASL seçmek zorunda kaldım — ve bunun tek nedeni veri.</div>
+        <div class="ctx-body">
+            Açıkçası, bir Türk olarak bu sistemi <strong>Türk İşaret Dili (TİD)</strong> üzerine kurmak isterdim. 
+            Ama yapay zeka modellerini eğitmek için binlerce etiketli görüntüye ihtiyaç var. 
+            TİD için bu ölçekte, hazır ve açık kaynak bir veri seti henüz mevcut değil.<br><br>
+            <em>ASL</em> ise dünyanın en iyi belgelenmiş işaret dillerinden biri; Roboflow ve akademik kaynaklarda 
+            yüzlerce bin etiketli görüntü var. Altyapımı test etmek, YOLO11'i gerçekten çalıştırmak ve 
+            sistemi ispatlamak için ASL'yi seçtim — ama bu geçici bir seçim.<br><br>
+            <strong>Asıl hedef:</strong> Bu çevrimdışı motoru yakın gelecekte TİD verileriyle yeniden eğitmek ve 
+            ülkemizdeki işitme engelli bireyler için gerçekten işe yarayan bir araç üretmek.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("""
+    <div class="quote-block">
+        <div class="quote-text">"Eğer TİD verisi olsaydı, zaten TİD yapardım. Olmadığı için önce sistemi ispatlıyorum."</div>
+        <div class="quote-attr">— Projenin sahibi</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── BÖLÜM 2: TİD vs ASL ─────────────────────────────────────────────
+    st.markdown('<div class="sec-lbl" style="margin-top:40px;">İşaret Dilleri Hakkında</div>', unsafe_allow_html=True)
+
+    c1, c2 = st.columns(2, gap="large")
+    with c1:
+        st.markdown("""
+        <div class="ctx-card">
+            <div class="ctx-eyebrow">Yanlış Bilinen Gerçek</div>
+            <div class="ctx-title">İşaret dilleri evrensel değildir.</div>
+            <div class="ctx-body">
+                Çoğu insan tek bir "işaret dili" olduğunu sanır. Oysa her ülkenin, 
+                hatta her bölgenin kendi bağımsız işaret dili, grameri ve sözdizimi vardır.<br><br>
+                <strong>ASL</strong> alfabe harflerini büyük ölçüde tek elle ifade ederken, 
+                <em>TİD</em> harfler için genellikle iki elin koordinasyonunu kullanır. 
+                İki dili karıştırarak çeviri yapamazsın — tıpkı Türkçe ile Japonca gibi.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    with c2:
+        st.markdown("""
+        <div class="ctx-card">
+            <div class="ctx-eyebrow">Kültürel Derinlik</div>
+            <div class="ctx-title">TİD; Osmanlı'ya uzanır.</div>
+            <div class="ctx-body">
+                Türk İşaret Dili'nin kökleri Osmanlı saray geleneğine ve o dönemde kurulan 
+                sağırlar okullarına uzanır. Bu, TİD'i yalnızca bir iletişim aracı değil, 
+                derin bir kültürel miras hâline getirir.<br><br>
+                <strong>ASL</strong> ise 19. yüzyıl başında Fransız İşaret Dili (LSF) ile 
+                harmanlanarak doğmuştur. Her iki dil de sağır toplumunun en güçlü kimlik 
+                ifadesidir ve bir toplum dilinin tüm zenginliğine sahiptir.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # ── BÖLÜM 3: TEKNİK SÜREÇ ────────────────────────────────────────────
+    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+    st.markdown('<div class="sec-lbl">Nasıl İnşa Ettim</div>', unsafe_allow_html=True)
+
+    st.markdown("""
+    <div class="timeline">
+
+        <div class="tl-item">
+            <div class="tl-dot">1</div>
+            <div class="tl-content">
+                <div class="tl-date">Başlangıç</div>
+                <div class="tl-title">Veri toplama ve model seçimi</div>
+                <div class="tl-body">
+                    Roboflow'dan açık kaynak ASL veri setini edindim. YOLO ailesini inceledim — 
+                    YOLO11'in tek aşamalı (single-stage) mimarisi sayesinde gerçek zamanlı çıkarım 
+                    için en uygun seçenek olduğuna karar verdim.
+                </div>
+            </div>
+        </div>
+
+        <div class="tl-item">
+            <div class="tl-dot">2</div>
+            <div class="tl-content">
+                <div class="tl-date">Model Eğitimi</div>
+                <div class="tl-title">YOLO11 fine-tuning + OpenCV entegrasyonu</div>
+                <div class="tl-body">
+                    Modeli özel veriyle eğittim, <code style="background:var(--surface); padding:1px 6px; border-radius:4px; font-size:11px;">best.pt</code> ağırlık dosyasını elde ettim. 
+                    OpenCV ile kamera akışını yakaladım; BGR→RGB dönüşümü yaparak Streamlit'e aktardım.
+                </div>
+            </div>
+        </div>
+
+        <div class="tl-item">
+            <div class="tl-dot">3</div>
+            <div class="tl-content">
+                <div class="tl-date">Sinyal Filtresi</div>
+                <div class="tl-title">WordAssembler: debounce mimarisi</div>
+                <div class="tl-body">
+                    Kamera gürültüsü yüzünden her karede farklı sınıf algılanabiliyor. 
+                    Ardışık N frame boyunca aynı işaret geldiyse "gerçek" kabul eden bir 
+                    <strong>debounce buffer</strong> yazdım. YUMRUK işareti kelimeyi onaylıyor ve 
+                    yeni kelimeye geçiyor.
+                </div>
+            </div>
+        </div>
+
+        <div class="tl-item">
+            <div class="tl-dot">4</div>
+            <div class="tl-content">
+                <div class="tl-date">NLP Katmanı</div>
+                <div class="tl-title">Offline kelime tamamlama</div>
+                <div class="tl-body">
+                    Hiçbir bulut API'si kullanmadan; prefix matching ve Levenshtein mesafesiyle 
+                    çalışan lokal bir kelime tamamlayıcı yazdım. İnternet gerektirmez, 
+                    gecikme sıfıra yakındır.
+                </div>
+            </div>
+        </div>
+
+        <div class="tl-item">
+            <div class="tl-dot">5</div>
+            <div class="tl-content">
+                <div class="tl-date">Bugün</div>
+                <div class="tl-title">Çalışır, demo edilebilir, açıklanabilir</div>
+                <div class="tl-body">
+                    Sistem ≤ 0.5 saniye tepki süresinde çalışıyor. Tüm proje 
+                    tek bir <code style="background:var(--surface); padding:1px 6px; border-radius:4px; font-size:11px;">app.py</code> dosyasında, sıfır bulut bağımlılığıyla,
+                    herhangi bir bilgisayarda çalışabilecek şekilde paketlendi.
+                </div>
+            </div>
+        </div>
+
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── BÖLÜM 4: KAPANIŞ ─────────────────────────────────────────────────
+    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+
+    st.markdown("""
+    <div class="ctx-card">
+        <div class="ctx-eyebrow">Son Söz</div>
+        <div class="ctx-title">Solo. Sıfır bütçe. Çalışıyor.</div>
+        <div class="ctx-body">
+            Bu projeyi bir ekip yapmadı. Bir şirket finanse etmedi. Bir danışman yönlendirmedi.<br><br>
+            Sadece bir lise öğrencisi, bir bilgisayar ve merak. Modeli ben eğittim, 
+            algoritmaları ben yazdım, arayüzü ben tasarladım — sabah okul, akşam kod.<br><br>
+            Belki sistem mükemmel değil. Ama <strong>çalışıyor</strong>. Ve en önemlisi: 
+            nedenini, nasılını, sınırlarını ve bir sonraki adımının ne olması gerektiğini 
+            tam olarak biliyorum. Bu projenin asıl değeri de burada.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("<div style='height:32px'></div>", unsafe_allow_html=True)
+    st.markdown("""
+    <div class="spec-row">
+        <div class="spec-pill"><div class="spec-val">1</div><div class="spec-lbl">Geliştirici</div></div>
+        <div class="spec-pill"><div class="spec-val">≤0.5s</div><div class="spec-lbl">Tepki Süresi</div></div>
+        <div class="spec-pill"><div class="spec-val">%0</div><div class="spec-lbl">Bulut Bağımlılığı</div></div>
+        <div class="spec-pill"><div class="spec-val">TİD</div><div class="spec-lbl">Sonraki Hedef</div></div>
+    </div>
+    """, unsafe_allow_html=True)

@@ -1,0 +1,385 @@
+import streamlit as st
+import cv2
+import difflib
+from collections import deque
+from ultralytics import YOLO
+
+# ==========================================
+# 1. NLP VE KELİME TAMAMLAMA MODÜLÜ (Offline)
+# ==========================================
+class OfflineAutoCompleter:
+    def __init__(self):
+        # İnternetsiz lokal arama için kelime dağarcığı [cite: 259]
+        self.vocabulary = [
+            "MERHABA", "PROJE", "SİSTEM", "KONTROL", "ROBOT", "YAPAYZEKA",
+            "OTOMASYON", "MÜHENDİS", "DENEME", "BİLGİSAYAR", "GÖRÜNTÜ",
+            "HELLO", "WORLD", "SYSTEM", "CONTROL", "ROBOTICS", "TEKNOLAB",
+            "AUTOMATION", "ENGINEER", "PROJECT", "COMPUTER", "VISION"
+        ]
+
+    def suggest_word(self, partial_word, top_n=3):
+        if not partial_word:
+            return []
+        partial_word = partial_word.upper()
+        # Önce doğrudan prefix eşleşmelerini, sonra levenshtein benzerliklerini getir 
+        prefix_matches = [w for w in self.vocabulary if w.startswith(partial_word)]
+        close_matches = difflib.get_close_matches(partial_word, self.vocabulary, n=top_n, cutoff=0.4)
+        combined = list({w for w in (prefix_matches + close_matches)})
+        return combined[:top_n]
+
+
+# ==========================================
+# 2. SİNYAL FİLTRELEME & AKILLI "SPACE" MANTIĞI
+# ==========================================
+class WordAssembler:
+    def __init__(self, debounce_frames=5):
+        self.debounce_frames = debounce_frames
+        # Gürültüyü (noise) engellemek için Ring Buffer (deque) kullanımı [cite: 261]
+        self.frame_buffer = deque(maxlen=debounce_frames)
+        self.current_word = ""
+        self.full_sentence = ""
+
+    def update(self, detected_char):
+        if not detected_char:
+            return self.current_word, self.full_sentence
+
+        self.frame_buffer.append(detected_char)
+
+        # Buffer tam doluysa ve tüm framelerde aynı harf tespit edildiyse (Güvenilir Tespit) [cite: 262]
+        if len(self.frame_buffer) == self.debounce_frames and len(set(self.frame_buffer)) == 1:
+            val = self.frame_buffer[0]
+
+            if val == "SPACE" or val == "YUMRUK":
+                if self.current_word:
+                    self.full_sentence += self.current_word + " "
+                self.current_word = ""
+                self.frame_buffer.clear()
+
+            elif not self.current_word or self.current_word[-1] != val:
+                self.current_word += val
+                self.frame_buffer.clear()
+
+        return self.current_word, self.full_sentence
+
+
+# ==========================================
+# 3. SAYFA AYARLARI & CSS (ÖZEL RENK PALETİ)
+# ==========================================
+st.set_page_config(page_title="TeknoLAB ASL AI | Ahmet Bilal Bayrak", layout="wide", page_icon="🤟")
+
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap');
+
+:root {
+    /* Renk Paleti Entegrasyonu */
+    --ink-black:        #001524;
+    --ink-black-light:  #00111d;
+    --stormy-teal:      #15616d;
+    --stormy-teal-dark: #0c3940;
+    --papaya-whip:      #ffecd1;
+    --papaya-dark:      #ffc574;
+    --vivid-tangerine:  #ff7d00;
+    --brandy:           #78290f;
+    --brandy-light:     #b93f17;
+
+    --bg:           var(--ink-black);
+    --bg-2:         var(--ink-black-light);
+    --surface:      var(--stormy-teal-dark);
+    --border:       var(--stormy-teal);
+    --text-primary: var(--papaya-whip);
+    --text-muted:   var(--papaya-dark);
+    --accent:       var(--vivid-tangerine);
+    --accent-warm:  var(--brandy-light);
+    
+    --radius-md:    16px;
+    --radius-lg:    22px;
+    --shadow-md:    0 8px 24px rgba(0,0,0,0.4);
+}
+
+html, body, [data-testid="stAppViewContainer"], .main {
+    background: var(--bg) !important;
+    font-family: 'Poppins', sans-serif !important;
+    color: var(--text-primary) !important;
+}
+
+[data-testid="stSidebar"] {
+    background: var(--bg-2) !important;
+    border-right: 1px solid var(--border) !important;
+}
+
+h1, h2, h3, h4 {
+    color: var(--text-primary) !important;
+    font-weight: 700;
+}
+
+/* Custom Cards */
+.custom-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 24px;
+    box-shadow: var(--shadow-md);
+    margin-bottom: 20px;
+}
+
+.custom-card-title {
+    color: var(--accent);
+    font-size: 14px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-weight: 700;
+    margin-bottom: 12px;
+}
+
+.metric-value {
+    font-size: 32px;
+    font-weight: 800;
+    color: var(--text-primary);
+    line-height: 1.2;
+}
+
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.chip {
+    background: var(--bg-2);
+    color: var(--accent);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 14px;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+/* Hide Streamlit Defaults */
+#MainMenu, footer, header { visibility: hidden; }
+</style>
+""", unsafe_allow_html=True)
+
+
+# ==========================================
+# 4. YÜKLEME & STATE YÖNETİMİ
+# ==========================================
+@st.cache_resource
+def load_local_model():
+    # Model lokalden, offline yükleniyor [cite: 370]
+    return YOLO("best.pt")
+
+try:
+    model = load_local_model()
+    model_ok = True
+except Exception:
+    st.error("Model (best.pt) bulunamadı! Lütfen aynı dizine ekleyin.")
+    st.stop()
+    model_ok = False
+
+if 'assembler' not in st.session_state:
+    st.session_state.assembler = WordAssembler(debounce_frames=5)
+if 'completer' not in st.session_state:
+    st.session_state.completer = OfflineAutoCompleter()
+
+
+# ==========================================
+# 5. SIDEBAR & NAVİGASYON
+# ==========================================
+with st.sidebar:
+    st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/1/1b/Istanbul_Technical_University_logo.svg/200px-Istanbul_Technical_University_logo.svg.png", width=80)
+    st.markdown("### TeknoLAB ASL AI\n**Geliştirici:** Ahmet Bilal Bayrak\n*İTÜ Kontrol & Otomasyon*")
+    st.markdown("---")
+    
+    page = st.radio("Navigasyon", ["🏠 Çeviri Arayüzü", "📖 Proje Manifestosu (Neden ASL?)", "⚙️ Metrikler & Pratik"])
+    
+    st.markdown("---")
+    conf_threshold = st.slider("IoU & Güven Eşiği (Confidence)", 0.30, 1.00, 0.60)
+    
+    st.markdown("""
+    <div style='font-size: 12px; color: var(--text-muted);'>
+    <b>Mimari:</b> YOLO11 + OpenCV<br>
+    <b>NLP:</b> Offline Ring Buffer<br>
+    <b>API Kullanımı:</b> %0 (Full Local)
+    </div>
+    """, unsafe_allow_html=True)
+
+
+# ==========================================
+# 6. SAYFA İÇERİKLERİ
+# ==========================================
+
+# ── SAYFA 1: ÇEVİRİ ARAYÜZÜ ──
+if page == "🏠 Çeviri Arayüzü":
+    st.markdown("## 🤟 Gerçek Zamanlı ASL Çevirmeni")
+    st.markdown("Kamera akışından alınan frameler YOLO11 ile işlenir ve NLP filtresinden geçirilerek kelimelere dönüştürülür.")
+    
+    col_cam, col_nlp = st.columns([3, 2], gap="large")
+
+    with col_cam:
+        run_camera = st.checkbox("Kamerayı Başlat", value=False)
+        FRAME_WINDOW = st.empty()
+        
+        if not run_camera:
+            st.markdown("""
+            <div class='custom-card' style='text-align: center; opacity: 0.7;'>
+                <h2>📷 Kamera Kapalı</h2>
+                <p>Başlamak için yukarıdaki kutucuğu işaretleyin.</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+    with col_nlp:
+        def render_nlp(full_sentence, current_word, suggestions):
+            s_val = full_sentence.strip() if full_sentence else "..."
+            w_val = current_word if current_word else "..."
+            
+            chips_html = "".join([f'<div class="chip">{s}</div>' for s in suggestions]) if suggestions else "<span style='font-size: 13px;'>Yeterli harf girilmedi...</span>"
+            
+            st.markdown(f"""
+            <div class="custom-card">
+                <div class="custom-card-title">📋 Oluşturulan Cümle</div>
+                <div class="metric-value">{s_val}</div>
+            </div>
+            
+            <div class="custom-card">
+                <div class="custom-card-title">🔤 Aktif Kelime</div>
+                <div class="metric-value">{w_val}</div>
+            </div>
+            
+            <div class="custom-card">
+                <div class="custom-card-title">💡 Offline NLP Önerileri</div>
+                <div class="chips">{chips_html}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        nlp_container = st.empty()
+        
+        with nlp_container:
+            render_nlp(
+                st.session_state.assembler.full_sentence,
+                st.session_state.assembler.current_word,
+                st.session_state.completer.suggest_word(st.session_state.assembler.current_word)
+            )
+            
+        if st.button("🧹 Belleği Temizle", use_container_width=True):
+            st.session_state.assembler.current_word = ""
+            st.session_state.assembler.full_sentence = ""
+            st.rerun()
+
+    # Kamera Döngüsü (Yalnızca sekme aktifken ve kutu işaretliyse çalışır)
+    if run_camera:
+        cap = cv2.VideoCapture(0)
+        while run_camera:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            # YOLO inference [cite: 388]
+            results = model.predict(frame, conf=conf_threshold, verbose=False)
+            detected_char = None
+
+            if len(results[0].boxes) > 0:
+                box = results[0].boxes[0]
+                detected_char = model.names[int(box.cls)]
+
+            annotated_frame = results[0].plot()
+            annotated_frame = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
+            FRAME_WINDOW.image(annotated_frame, use_container_width=True)
+
+            current_word, full_sentence = st.session_state.assembler.update(detected_char)
+            suggestions = st.session_state.completer.suggest_word(current_word)
+            
+            with nlp_container:
+                render_nlp(full_sentence, current_word, suggestions)
+
+        cap.release()
+
+# ── SAYFA 2: PROJE MANİFESTOSU ──
+elif page == "📖 Proje Manifestosu (Neden ASL?)":
+    st.markdown("## 🏛️ Proje Manifestosu ve Vizyon")
+    
+    st.markdown("""
+    <div class="custom-card">
+        <div class="custom-card-title">NEDEN TİD (TÜRK İŞARET DİLİ) DEĞİL DE ASL?</div>
+        <p style="font-size: 15px; line-height: 1.8;">
+        İTÜ Kontrol ve Otomasyon Mühendisliği öğrencisi olarak, projemi tasarlarken duygusal kararlar yerine veri bilimi gerçekleriyle hareket ettim. Sanılanın aksine işaret dilleri evrensel değildir; Türk İşaret Dili (TİD) ve Amerikan İşaret Dili (ASL) gramer yapıları ve sembolleri bakımından tamamen farklıdır. 
+        </p>
+        <p style="font-size: 15px; line-height: 1.8;">
+        Yapay zeka modellerini eğitmek, feature extraction yapabilmek ve sistemin <b>mAP (mean Average Precision)</b> değerini yüksek tutabilmek için devasa, etiketlenmiş ve dengeli veri setlerine (dataset) ihtiyaç vardır. TİD için public, robust ve sınıf dengesizliği (class imbalance) olmayan bir veri seti literatürde maalesef henüz yeterli seviyede değildir. 
+        </p>
+        <p style="font-size: 15px; line-height: 1.8; color: var(--accent);">
+        <b>Benim vizyonum:</b> Bu projeyi ASL üzerinde tamamen internetsiz, düşük gecikmeli (low-latency) bir "Proof of Concept (Konsept Kanıtı)" olarak ayağa kaldırmak ve kurduğum bu <i>YOLO11 + NLP Word Assembler</i> motoru altyapısını, yakın gelecekte kendi oluşturacağımız TİD veri setleriyle eğiterek ülkemizdeki işitme engelli bireylerin kullanımına sunmaktır.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("""
+        <div class="custom-card">
+            <div class="custom-card-title">Mühendislik Yaklaşımı</div>
+            <ul style="font-size: 14px; line-height: 1.7;">
+                <li>Sıfır bulut bağımlılığı (Tamamen edge-computing).</li>
+                <li>Ring buffer algoritması ile kamera gürültüsü filtresi.</li>
+                <li>Levenshtein mesafesi ile offline kelime tahmini.</li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
+    with col2:
+        st.markdown("""
+        <div class="custom-card">
+            <div class="custom-card-title">Kültürel Bağlam</div>
+            <p style="font-size: 14px; line-height: 1.7;">
+            ASL kökenini LSF'den (Fransız İşaret Dili) alırken, Türk İşaret Dili Osmanlı Sarayı sağırlar okuluna kadar uzanan çok daha eşsiz, çift el koordinasyonu gerektiren derin bir tarihe sahiptir.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+# ── SAYFA 3: METRİKLER & PRATİK ──
+elif page == "⚙️ Metrikler & Pratik":
+    st.markdown("## ⚙️ İzole Sistem Pratiği ve Sensör Metrikleri")
+    
+    st.markdown("""
+    <div class="custom-card">
+        <p>Sistemin çalışmasını kelime toplayıcı (Word Assembler) olmadan, doğrudan sensör (YOLO) bazında raw (ham) verilerle test etmek için bu ekranı kullanabilirsiniz. Sistem <code>YUMRUK</code> işaretini kelime sonu (SPACE) olarak algılayacak şekilde programlanmıştır.</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    pract_cam, pract_res = st.columns([3, 1], gap="large")
+    
+    with pract_cam:
+        run_practice = st.checkbox("Sensör Test Kamerasını Aç", value=False)
+        PRACTICE_WINDOW = st.empty()
+    
+    with pract_res:
+        detect_ph = st.empty()
+        
+    if run_practice:
+        cap2 = cv2.VideoCapture(0)
+        while run_practice:
+            ret, frame = cap2.read()
+            if not ret:
+                break
+                
+            results2 = model.predict(frame, conf=conf_threshold, verbose=False)
+            detected = None
+            
+            if len(results2[0].boxes) > 0:
+                b2 = results2[0].boxes[0]
+                detected = model.names[int(b2.cls)]
+                
+            ann = results2[0].plot()
+            ann = cv2.cvtColor(ann, cv2.COLOR_BGR2RGB)
+            PRACTICE_WINDOW.image(ann, use_container_width=True)
+            
+            if detected:
+                detect_ph.markdown(f"""
+                <div class="custom-card" style="text-align:center;">
+                    <div class="custom-card-title" style="color:var(--text-primary);">Anlık Sınıf (Class)</div>
+                    <div class="metric-value" style="color:var(--accent); font-size:48px;">{detected}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                detect_ph.markdown("""
+                <div class="custom-card" style="text-align:center;">
+                    <div class="custom-card-title">Anlık Sınıf (Class)</div>
+                    <div class="metric-value" style="color:var(--text-muted); font-size:48px;">-</div>
+                </div>
+                """, unsafe_allow_html=True)
+                
+        cap2.release()
