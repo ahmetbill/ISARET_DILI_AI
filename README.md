@@ -22,8 +22,8 @@ Ancak **TeknoLAB** ekibi olarak kurduğumuz bu esnek *YOLO11 + Çevrimdışı NL
 
 1.  **Depoyu Klonlayın:**
     ```bash
-    git clone [https://github.com/KULLANICI_ADIN/PROJE_REPO_ADIN.git](https://github.com/KULLANICI_ADIN/PROJE_REPO_ADIN.git)
-    cd PROJE_REPO_ADIN
+    git clone [https://github.com/ahmetbill/ISARET_DILI_AI.git](https://github.com/ahmetbill/ISARET_DILI_AI.git)
+    cd ISARET_DILI_AI
     ```
 
 2.  **Sanal Ortam Oluşturun ve Aktif Edin:**
