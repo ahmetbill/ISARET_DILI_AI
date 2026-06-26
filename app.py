@@ -28,11 +28,14 @@ class OfflineAutoCompleter:
 # 2. KERNEL: SİNYAL FİLTRELEME & BİRLEŞTİRİCİ
 # ==========================================
 class WordAssembler:
+    VERSION = 2
+
     def __init__(self, debounce_frames=6):
         self.debounce_frames = debounce_frames
         self.frame_buffer = deque(maxlen=debounce_frames)
         self.current_word = ""
         self.full_sentence = ""
+        self._v = self.VERSION
 
     def update(self, detected_char, suggestion=None):
         if not detected_char:
@@ -275,7 +278,7 @@ except Exception as e:
     st.error(f"Sistem Hatası: 'best.pt' yüklenemedi. Bilgi: {e}")
     model_loaded = False
 
-if 'assembler' not in st.session_state:
+if 'assembler' not in st.session_state or getattr(st.session_state.assembler, '_v', 0) != WordAssembler.VERSION:
     st.session_state.assembler = WordAssembler()
 if 'completer' not in st.session_state:
     st.session_state.completer = OfflineAutoCompleter()
@@ -303,7 +306,7 @@ with tab1:
         suggest_ph = st.empty()
         
         st.markdown("<div style='margin-top: 24px;'></div>", unsafe_allow_html=True)
-        if st.button("🧹 Arabelleği Temizle", use_container_width=True):
+        if st.button("Arabelleği Temizle", width='stretch'):
             st.session_state.assembler.current_word = ""
             st.session_state.assembler.full_sentence = ""
             st.rerun()
