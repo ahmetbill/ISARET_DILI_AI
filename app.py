@@ -11,8 +11,33 @@ import os
 class OfflineAutoCompleter:
     def __init__(self):
         self.vocabulary = [
-            "MERHABA", "PROJE", "SİSTEM", "KONTROL", "ROBOT", "YAPAYZEKA",
-            "OTOMASYON", "MÜHENDİS", "İTÜ", "BİLGİSAYAR", "GÖRÜNTÜ", "ASL"
+            # --- Mevcut Listen ---
+            "TEKNOLAB","MERHABA", "PROJE", "SİSTEM", "KONTROL", "ROBOT", "YAPAYZEKA",
+            "OTOMASYON", "MÜHENDİS", "İTÜ", "BİLGİSAYAR", "GÖRÜNTÜ", "ASL",
+
+            # --- En Sık Kullanılan Genel Kelimeler (Bağlaç, Edat, Zamir) ---
+            "BİR", "VE", "BU", "İÇİN", "İLE", "DAHA", "ÇOK", "GİBİ", "KADAR",
+            "SONRA", "KENDİ", "HER", "HANGİ", "TÜM", "BAŞKA", "AYNI", "ÇÜNKÜ",
+            "ANCAK", "VEYA", "YADA", "EĞER", "SADECE", "YİNE", "HEM", "HİÇ",
+
+            # --- Soru Kelimeleri ---
+            "NE", "NASIL", "NEDEN", "NİÇİN", "KİM", "NEREDE", "NE ZAMAN", "HANGİSİ",
+
+            # --- En Sık Kullanılan Günlük İsimler ve Sıfatlar ---
+            "ŞEY", "ZAMAN", "GÜN", "YIL", "İNSAN", "İŞ", "HAYAT", "DÜNYA",
+            "YENİ", "BÜYÜK", "İYİ", "İLK", "ÖNEMLİ", "SON", "GÜZEL", "KÜÇÜK",
+            "YOL", "SONUÇ", "DURUM", "KONU", "BÖLÜM", "YER", "YÜKSEK", "HIZLI",
+
+            # --- En Sık Kullanılan Fiiller (Mastar Formunda) ---
+            "YAPMAK", "GELMEK", "GİTMEK", "ALMAK", "VERMEK",
+            "BİLMEK", "BULMAK", "ÇIKMAK", "GÖRMEK", "İSTEMEK", "ÇALIŞMAK", 
+            "DÜŞÜNMEK", "BAŞLAMAK", "GÖSTERMEK", "YAZMAK", "OKUMAK", "ANLAMAK",
+
+            # --- Teknik, Geliştirme ve Proje Odaklı Sık Kullanılanlar ---
+            "VERİ", "YAZILIM", "DONANIM", "SENSÖR", "MOTOR", "ALGORİTMA",
+            "SİMÜLASYON", "İLETİŞİM", "PARAMETRE", "AĞ", "SUNUCU", "SÜRÜ",
+            "HEDEF", "TAKİP", "TASARIM", "ANALİZ", "TEST", "KOD", "MODEL",
+            "DÖNGÜ", "HATA", "ÇÖZÜM", "GÜNCELLEME", "KOMUT", "EKSEN", "BAĞLANTI"
         ]
 
     def suggest_word(self, partial_word, top_n=3):
